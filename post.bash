@@ -99,7 +99,7 @@ $hashed_canonical_request"
 	signature=$(printf "$string_to_sign" | openssl dgst -binary -hex -sha256 -mac HMAC -macopt hexkey:$signing_key)
 	signature="${signature##* }"
 
-	curl -H "Authorization: AWS4-HMAC-SHA256 Credential=$access_key/$date/$region/$service/aws4_request, SignedHeaders=$signed_headers, Signature=$signature" -H "$canonical_headers" -d "$payload" -v "https://$host"
+	curl -H "Authorization: AWS4-HMAC-SHA256 Credential=$access_key/$date/$region/$service/aws4_request, SignedHeaders=$signed_headers, Signature=$signature" -H "$canonical_headers" -d "$payload" "https://$host"
 }
 
 
