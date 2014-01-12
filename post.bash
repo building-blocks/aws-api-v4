@@ -11,20 +11,9 @@ date="${x_amz_date/T*}"
 #~~~~~~~~~~~~~~~~~~~~
 # Fetch aws keys
 #~~~~~~~~~~~~~~~~~~~~
-lineno=0
-while read -r line; do
-	(( lineno++ ))
-	if (( lineno == 1 )); then
-		access_key="$line"
-	elif (( lineno == 2 )); then
-		secret_key="$line"
-	fi
-done < "$aws_secret_key_file"
-
-if (( lineno != 2 )); then
-	printf '%s\n' 'AWS secret key file should only have 2 lines'
-	exit 1
-fi
+mapfile -t lines < "$aws_secret_key_file"
+access_key="${lines[0]}"
+secret_key="${lines[1]}"
 
 
 get_wsdl_version() {
