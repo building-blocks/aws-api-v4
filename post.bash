@@ -9,23 +9,19 @@ my_vars() {
 	service='sqs'
 	action='ListQueues'
 	wsdl_version='2012-11-05'
+
 	payload="Action=$action&Version=$wsdl_version"
-	
 	host="$service.$region.amazonaws.com"
 	date_name='x-amz-date'
 	x_amz_date_long=$(date -u '+%Y%m%dT%H%M%SZ')
 	x_amz_date_short="${x_amz_date_long/T*}"
 	date="$x_amz_date_long"
+	
+	headers+=(["X-Amz-Date"]="$x_amz_date_long")
+	headers+=(["Content-Type"]="application/x-www-form-urlencoded; charset=utf-8")
+	headers+=(["Host"]="$host")
 
-	canonical_headers="content-type:application/x-www-form-urlencoded; charset=utf8
-host:$host
-${date_name,,}:$date"
-	echo "--- canonical_headers ---"
-	echo "$canonical_headers"
-	signed_headers="content-type;host;${date_name,,}"
-
-	curl_headers="Content-Type: application/x-www-form-urlencoded; charset=utf8
-X-Amz-Date: $x_amz_date_long"
+	headers_to_sign=("Host" "Content-Type" "X-Amz-Date")
 }
 
 example_vars() {
@@ -44,13 +40,17 @@ example_vars() {
 	x_amz_date_short="${x_amz_date_long/T*}"
 	date="$x_amz_date_long"
 
-	canonical_headers="content-type:application/x-www-form-urlencoded; charset=utf8
-host:$host
-${date_name,,}:$date"
-	echo "--- canonical_headers ---"
-	echo "$canonical_headers"
-	signed_headers="content-type;host;${date_name,,}"
-	#signed_headers="content-type;${date_name,,};host"
+	headers+=(["X-Amz-Date"]="$x_amz_date_long")
+	headers+=(["Content-Type"]="application/x-www-form-urlencoded; charset=utf-8")
+	headers+=(["Host"]="$host")
+
+	headers_to_sign=("Host" "Content-Type" "X-Amz-Date")
+
+	echo "=== Expected ==="
+	echo "hashed payload: b6359072c78d70ebee1e81adcbab4f01bf2c23245fa365ef83fe8f1f955085e2"
+	echo "hashed canonical request: 3511de7e95d28ecd39e9513b642aee07e54f4941150d8df8bf94b328ef7e55e2"
+	echo "signature: ced6826de92d2bdeed8f846f0bf508e8559e98e4b0199114b84c54174deb456c"
+	echo "=== End ==="
 }
 
 test_suite_post_form() {
@@ -67,18 +67,24 @@ test_suite_post_form() {
 	x_amz_date_short='20110909'
 	date='Mon, 09 Sep 2011 23:36:00 GMT'
 
-	canonical_headers="content-type:application/x-www-form-urlencoded; charset=utf8
-${date_name,,}:$date
-host:$host"
-	echo "--- canonical_headers ---"
-	echo "$canonical_headers"
-	signed_headers="content-type;${date_name,,};host"
+	headers+=(["Date"]="$date")
+	headers+=(["Content-Type"]="application/x-www-form-urlencoded; charset=utf8")
+	headers+=(["Host"]="$host")
+
+	headers_to_sign=("Host" "Content-Type" "Date")
+
+	echo "=== Expected ==="
+	echo "hashed payload: 3ba8907e7a252327488df390ed517c45b96dead033600219bdca7107d1d3f88a"
+	echo "hashed canonical request: c4115f9e54b5cecf192b1eaa23b8e88ed8dc5391bd4fde7b3fff3d9c9fe0af1f"
+	echo "signature: b105eb10c6d318d2294de9d49dd8b031b55e3c3fe139f2e637da70511e9e7b71"
+	echo "=== End ==="
 }
+
+declare -A headers
 
 my_vars
 #example_vars
 #test_suite_post_form
-
 
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -87,6 +93,18 @@ my_vars
 http_request_method='POST'
 canonical_uri='/'
 canonical_query_string=''
+
+unsorted_canonical_headers=()
+for header_name in "${headers_to_sign[@]}"; do
+	unsorted_canonical_headers+=("${header_name,,}:${headers[$header_name]}")
+done
+
+canonical_headers=$(printf '%s\n' "${unsorted_canonical_headers[@]}" | sort)
+
+signed_headers=$(printf '%s\n' "${headers_to_sign[@]}" | sort)
+signed_headers="${signed_headers,,}"
+signed_headers=$(printf "$signed_headers" | tr '\n' ';')
+signed_headers="${signed_headers%;}"
 
 hashed_payload=$(printf "$payload" | sha256sum)
 hashed_payload="${hashed_payload%% *}"
@@ -98,8 +116,6 @@ $canonical_headers
 
 $signed_headers
 $hashed_payload"
-echo "--- canonical request ---"
-echo "$canonical_request"
 
 hashed_canonical_request=$(printf "$canonical_request" | sha256sum)
 hashed_canonical_request="${hashed_canonical_request%% *}"
@@ -112,8 +128,6 @@ string_to_sign="AWS4-HMAC-SHA256
 $x_amz_date_long
 $x_amz_date_short/$region/$service/aws4_request
 $hashed_canonical_request"
-echo "--- string_to_sign ---"
-echo "$string_to_sign"
 
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -131,11 +145,25 @@ signing_key="${digest#* }"
 
 signature=$(printf "$string_to_sign" | openssl dgst -binary -hex -sha256 -mac HMAC -macopt hexkey:$signing_key)
 signature="${signature#* }"
-echo "--- signature ---"
-echo "$signature"
-
 
 #~~~~~~~~
 # Try it
 #~~~~~~~~
-curl -H "Authorization: AWS4-HMAC-SHA256 Credential=$access_key/$x_amz_date_short/$region/$service/aws4_request, SignedHeaders=$signed_headers, Signature=$signature" -H "$curl_headers" -d "$payload" "http://$host" -v
+for header in "${!headers[@]}"; do
+	new_header="\"$header: ${headers[$header]}\""
+	if [[ -z $curl_headers ]]; then
+		curl_headers="-H $new_header"
+	else
+		curl_headers="$curl_headers
+-H $new_header"
+	fi
+done
+
+read -r -d '' curl_params<<END
+url = "http://$host"
+$curl_headers
+-H "Authorization: AWS4-HMAC-SHA256 Credential=$access_key/$x_amz_date_short/$region/$service/aws4_request, SignedHeaders=$signed_headers, Signature=$signature"
+-d "$payload"
+END
+
+curl -K - < <(printf "$curl_params")
