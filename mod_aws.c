@@ -47,7 +47,7 @@ const char* get_x_amz_date(apr_pool_t* pool)
 }
 
 
-char* external_command(apr_pool_t* pool, const char* progname, const char* input, const char** argv, apr_size_t nbytes)
+char* external_command(apr_pool_t* pool, const char* input, char** argv, apr_size_t nbytes)
 {
 	apr_procattr_t *pattr;
 	apr_proc_t proc;
@@ -56,12 +56,13 @@ char* external_command(apr_pool_t* pool, const char* progname, const char* input
 	apr_procattr_io_set(pattr, APR_CHILD_BLOCK, APR_FULL_BLOCK, APR_NO_PIPE);
 	apr_procattr_cmdtype_set(pattr, APR_PROGRAM_ENV);
 	
-	apr_proc_create(&proc, progname, (const char* const*) argv, NULL, (apr_procattr_t*) pattr, pool);
+	apr_proc_create(&proc, argv[0], (const char* const*) argv, NULL, (apr_procattr_t*) pattr, pool);
 	apr_file_puts(input, proc.in);
 	apr_file_close(proc.in);
 
 	char* output = apr_pcalloc(pool, sizeof(char) * nbytes);
 	apr_file_read(proc.out, output, &nbytes);
+	output[nbytes] = '\0';
 
 	apr_file_close(proc.out);
 
@@ -76,20 +77,10 @@ char* external_command(apr_pool_t* pool, const char* progname, const char* input
 
 char* hmac_hash(apr_pool_t* pool, const char* input, char* hexkey)
 {
-	const char* progname = "/usr/bin/openssl";
-
-	int argc = 0;
-	const char* argv[32];   /* 32 is a magic number. enough size for the number of arguments list */
-	argv[argc++] = progname; /* program path of the command to run */
-	argv[argc++] = "dgst";
-	argv[argc++] = "-sha256";
-	argv[argc++] = "-mac";
-	argv[argc++] = "HMAC";
-	argv[argc++] = "-macopt";
-	argv[argc++] = hexkey;
-	argv[argc++] = NULL;    /* The final element should be NULL as sentinel */
-
-	char* hash = external_command(pool, progname, input, argv, 128);
+	const char* command = apr_pstrcat(pool, "/usr/bin/openssl dgst -sha256 -mac HMAC -macopt ", hexkey, NULL);
+	char** args = NULL;
+	apr_tokenize_to_argv(command, &args, pool);
+	char* hash = external_command(pool, input, args, 128);
 
 	int i;
 	int hash_len = strlen(hash);
@@ -109,14 +100,11 @@ char* hmac_hash(apr_pool_t* pool, const char* input, char* hexkey)
 
 char* sha256(apr_pool_t* pool, const char* input)
 {
-	const char* progname = "/usr/bin/sha256sum";
+	const char* command = apr_pstrcat(pool, "/usr/bin/sha256sum", NULL);
+	char** argv = NULL;
+	apr_tokenize_to_argv(command, &argv, pool);
 
-	int argc = 0;
-	const char* argv[32];
-	argv[argc++] = progname;
-	argv[argc++] = NULL;
-
-	char *output = apr_pstrcat(pool, external_command(pool, progname, input, argv, 64), NULL);
+	char *output = apr_pstrcat(pool, external_command(pool, input, argv, 64), NULL);
 
 	return output;
 }
@@ -124,8 +112,8 @@ char* sha256(apr_pool_t* pool, const char* input)
 
 const char* derive_signing_key(apr_pool_t* pool, const char* hashed_secret_key, const char* date, const char* region, const char* service)
 {
-	char* hexkey;
-	char* digest;
+	char* hexkey = NULL;
+	char* digest = NULL;
 
 	hexkey = apr_pstrcat(pool, "hexkey:", hashed_secret_key, NULL);
 	digest = hmac_hash(pool, date, hexkey);
@@ -146,24 +134,13 @@ const char* derive_signing_key(apr_pool_t* pool, const char* hashed_secret_key, 
 
 const char* make_signature(apr_pool_t *pool, const char* signing_key, const char* string_to_sign)
 {
-	const char* progname = "/usr/bin/openssl";
-	char* hexkey;
+	char* hexkey = NULL;
 	hexkey = apr_pstrcat(pool, "hexkey:", signing_key, NULL);
 
-	int argc = 0;
-	const char* argv[32];   /* 32 is a magic number. enough size for the number of arguments list */
-	argv[argc++] = progname; /* program path of the command to run */
-	argv[argc++] = "dgst";
-	argv[argc++] = "-binary";
-	argv[argc++] = "-hex";
-	argv[argc++] = "-sha256";
-	argv[argc++] = "-mac";
-	argv[argc++] = "HMAC";
-	argv[argc++] = "-macopt";
-	argv[argc++] = hexkey;
-	argv[argc++] = NULL;    /* The final element should be NULL as sentinel */
-
-	char* output = external_command(pool, progname, string_to_sign, argv, 128);
+	const char* command = apr_pstrcat(pool, "/usr/bin/openssl dgst -binary -hex -sha256 -mac HMAC -macopt ", hexkey, NULL);
+	char** args = NULL;
+	apr_tokenize_to_argv(command, &args, pool);
+	char* output = external_command(pool, string_to_sign, args, 128);
 	int i;
 	int len = strlen(output);
 	for (i = 0; i < len - 1; i++) {
@@ -240,10 +217,9 @@ void make_signed_request_message(request_rec* r, request_params* req)
 }
 
 
-static int response_as_string(apr_pool_t* pool, request_params* req, apr_bucket_alloc_t* bucket_alloc)
+void response_as_string(apr_pool_t* pool, request_params* req, apr_bucket_alloc_t* bucket_alloc)
 {
 	apr_bucket* bucket = NULL;
-	apr_status_t rv;
 	bucket = apr_bucket_socket_create(req->sock, bucket_alloc);
 
 	const char *buff = apr_palloc(pool, 2048);
@@ -251,9 +227,7 @@ static int response_as_string(apr_pool_t* pool, request_params* req, apr_bucket_
 	int i;
 	// Stop it after some rounds, as a failsafe, to avoid it running indefinitely
 	for (i = 0; i < 5; i++) {
-		rv = apr_bucket_read(bucket, &buff, &len, APR_BLOCK_READ);
-
-		if (rv != APR_SUCCESS || len == 0) {
+		if (apr_bucket_read(bucket, &buff, &len, APR_BLOCK_READ != APR_SUCCESS || len == 0)) {
 			break;
 		}
 
@@ -268,25 +242,15 @@ static int response_as_string(apr_pool_t* pool, request_params* req, apr_bucket_
 		bucket = APR_BUCKET_NEXT(bucket);
 	}
 
-	if (i == 0) {
-		ap_log_error(APLOG_MARK, APLOG_NOTICE, 0, NULL, "did not read any response");
-	}
-
 	apr_bucket_destroy(bucket);
-
-	return rv;
 }
 
 
-static int make_request(request_rec *r, request_params* req)
+static int make_aws_request(request_rec *r, request_params* req)
 {
 	apr_pool_t* pool = r->pool;
 
-	apr_status_t rv;
-	if ((rv = send_request(r, req)) != APR_SUCCESS) {
-		ap_log_error(APLOG_MARK, APLOG_NOTICE, 0, NULL, "problem with send_request");
-		return rv;
-	}
+	send_request(r, req);
 
 	req->resp = (response_params*) apr_pcalloc(pool, sizeof(response_params));
 
@@ -321,7 +285,7 @@ void make_list_queues_request(request_rec* r)
 
 	make_signed_request_message(r, req);
 
-	make_request(r, req);
+	make_aws_request(r, req);
 
 	ap_rputs(req->resp->body, r);
 }
@@ -332,6 +296,8 @@ static int aws_handler(request_rec* r)
 	if (!r->handler || strcmp(r->handler, "aws-handler")) {
 		return (DECLINED);
 	}
+
+	ap_log_error(APLOG_MARK, APLOG_NOTICE, 0, NULL, "aws_handler");
 
 	make_list_queues_request(r);
 
