@@ -10,7 +10,7 @@
 
 typedef struct {
 	const char* access;
-	const char* secret;
+	const char* enc_secret;
 } aws_keys;
 
 typedef struct {
@@ -108,12 +108,12 @@ char* sha256(apr_pool_t* pool, const char* input)
 }
 
 
-const char* derive_signing_key(apr_pool_t* pool, const char* hashed_secret_key, const char* date, const char* region, const char* service)
+const char* derive_signing_key(apr_pool_t* pool, const char* enc_secret_key, const char* date, const char* region, const char* service)
 {
 	char* hexkey = NULL;
 	char* digest = NULL;
 
-	hexkey = apr_pstrcat(pool, "hexkey:", hashed_secret_key, NULL);
+	hexkey = apr_pstrcat(pool, "hexkey:", enc_secret_key, NULL);
 	digest = hmac_hash(pool, date, hexkey);
 
 	hexkey = apr_pstrcat(pool, "hexkey:", digest, NULL);
@@ -153,7 +153,7 @@ const char* make_signature(apr_pool_t *pool, const char* signing_key, const char
 }
 
 
-static int send_request(request_rec *r, request_params* req)
+void send_request(request_rec *r, request_params* req)
 {
 	apr_sockaddr_t *sockaddr;
 	apr_pool_t* pool = r->pool;
@@ -170,8 +170,6 @@ static int send_request(request_rec *r, request_params* req)
 	apr_socket_timeout_set(req->sock, timeout);
 	item_size = strlen(req->message);
 	apr_socket_send(req->sock, req->message, &item_size);
-
-	return APR_SUCCESS;
 }
 
 
@@ -195,7 +193,7 @@ void make_signed_request_message(request_rec* r, request_params* req)
 	const char* hashed_canonical_request = sha256(pool, canonical_request);
 
 	const char* string_to_sign = apr_pstrcat(pool, "AWS4-HMAC-SHA256\n", x_amz_date_sec, "\n", x_amz_date_day, "/", req->region, "/", req->service, "/aws4_request\n", hashed_canonical_request, NULL);
-	const char* signing_key = derive_signing_key(pool, keys->secret, x_amz_date_day, req->region, req->service);
+	const char* signing_key = derive_signing_key(pool, keys->enc_secret, x_amz_date_day, req->region, req->service);
 	const char* signature = make_signature(pool, signing_key, string_to_sign);
 
 	const char* authorization_header = apr_pstrcat(pool, "AWS4-HMAC-SHA256 Credential=", keys->access, "/", x_amz_date_day, "/", req->region, "/", req->service, "/aws4_request, SignedHeaders=", signed_headers, ", Signature=", signature, NULL);
@@ -221,7 +219,7 @@ void response_as_string(apr_pool_t* pool, request_params* req, apr_bucket_alloc_
 	const char *buff = apr_palloc(pool, 2048);
 	apr_size_t len;
 	int i;
-	// Stop it after some rounds, as a failsafe, to avoid it running indefinitely
+	// Failsafe, to avoid it running indefinitely
 	for (i = 0; i < 5; i++) {
 		if (apr_bucket_read(bucket, &buff, &len, APR_BLOCK_READ != APR_SUCCESS || len == 0)) {
 			break;
@@ -242,14 +240,14 @@ void response_as_string(apr_pool_t* pool, request_params* req, apr_bucket_alloc_
 }
 
 
-static int make_aws_request(request_rec *r, request_params* req)
+void make_aws_request(request_rec *r, request_params* req)
 {
 	apr_pool_t* pool = r->pool;
 
+	make_signed_request_message(r, req);
 	send_request(r, req);
 
 	req->resp = (response_params*) apr_pcalloc(pool, sizeof(response_params));
-
 	response_as_string(pool, req, r->connection->bucket_alloc);
 
 	apr_socket_close(req->sock);
@@ -263,8 +261,6 @@ static int make_aws_request(request_rec *r, request_params* req)
 			break;
 		}
 	}
-
-	return APR_SUCCESS;
 }
 
 
@@ -278,8 +274,6 @@ void make_list_queues_request(request_rec* r)
 	req->service = apr_pstrcat(pool, "sqs", NULL);
 	req->host = apr_pstrcat(pool, req->service, ".", req->region, ".amazonaws.com", NULL);
 	req->payload = apr_pstrcat(pool, "Action=ListQueues&Version=2012-11-05", NULL);
-
-	make_signed_request_message(r, req);
 
 	make_aws_request(r, req);
 
@@ -309,11 +303,11 @@ static const char* set_aws_access_key(cmd_parms *parms, void *mconfig, const cha
 }
 
 
-static const char* set_aws_secret_key(cmd_parms *parms, void *mconfig, const char *arg)
+static const char* set_aws_enc_secret_key(cmd_parms *parms, void *mconfig, const char *arg)
 {
 	aws_keys* keys = ap_get_module_config(parms->server->module_config, &aws_module);
 	const char* aws4_key = apr_pstrcat(parms->pool, "AWS4", arg, NULL);
-	keys->secret = apr_pescape_hex(parms->pool, aws4_key, strlen(aws4_key), 0);
+	keys->enc_secret = apr_pescape_hex(parms->pool, aws4_key, strlen(aws4_key), 0);
 	return NULL;
 }
 
@@ -329,7 +323,7 @@ static void *create_server_conf(apr_pool_t *p, server_rec *s)
 static const command_rec directives[] =
 {
 	AP_INIT_TAKE1("AwsAccessKey", set_aws_access_key, NULL, RSRC_CONF, "Set access key"),
-	AP_INIT_TAKE1("AwsSecretKey", set_aws_secret_key, NULL, RSRC_CONF, "Set secret key"),
+	AP_INIT_TAKE1("AwsSecretKey", set_aws_enc_secret_key, NULL, RSRC_CONF, "Set secret key"),
 	{ NULL }
 };
 
