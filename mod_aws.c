@@ -47,10 +47,13 @@ const char* get_x_amz_date(apr_pool_t* pool)
 }
 
 
-char* external_command(apr_pool_t* pool, const char* input, char** argv, apr_size_t nbytes)
+char* external_command(apr_pool_t* pool, const char* input, const char* command, apr_size_t nbytes)
 {
 	apr_procattr_t *pattr;
 	apr_proc_t proc;
+
+	char** argv = NULL;
+	apr_tokenize_to_argv(command, &argv, pool);
 
 	apr_procattr_create(&pattr, pool);
 	apr_procattr_io_set(pattr, APR_CHILD_BLOCK, APR_FULL_BLOCK, APR_NO_PIPE);
@@ -78,9 +81,7 @@ char* external_command(apr_pool_t* pool, const char* input, char** argv, apr_siz
 char* hmac_hash(apr_pool_t* pool, const char* input, char* hexkey)
 {
 	const char* command = apr_pstrcat(pool, "/usr/bin/openssl dgst -sha256 -mac HMAC -macopt ", hexkey, NULL);
-	char** args = NULL;
-	apr_tokenize_to_argv(command, &args, pool);
-	char* hash = external_command(pool, input, args, 128);
+	char* hash = external_command(pool, input, command, 128);
 
 	int i;
 	int hash_len = strlen(hash);
@@ -101,10 +102,7 @@ char* hmac_hash(apr_pool_t* pool, const char* input, char* hexkey)
 char* sha256(apr_pool_t* pool, const char* input)
 {
 	const char* command = apr_pstrcat(pool, "/usr/bin/sha256sum", NULL);
-	char** argv = NULL;
-	apr_tokenize_to_argv(command, &argv, pool);
-
-	char *output = apr_pstrcat(pool, external_command(pool, input, argv, 64), NULL);
+	char *output = apr_pstrcat(pool, external_command(pool, input, command, 64), NULL);
 
 	return output;
 }
@@ -138,9 +136,7 @@ const char* make_signature(apr_pool_t *pool, const char* signing_key, const char
 	hexkey = apr_pstrcat(pool, "hexkey:", signing_key, NULL);
 
 	const char* command = apr_pstrcat(pool, "/usr/bin/openssl dgst -binary -hex -sha256 -mac HMAC -macopt ", hexkey, NULL);
-	char** args = NULL;
-	apr_tokenize_to_argv(command, &args, pool);
-	char* output = external_command(pool, string_to_sign, args, 128);
+	char* output = external_command(pool, string_to_sign, command, 128);
 	int i;
 	int len = strlen(output);
 	for (i = 0; i < len - 1; i++) {
