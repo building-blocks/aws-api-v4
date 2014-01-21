@@ -83,17 +83,8 @@ char* hmac_hash(apr_pool_t* pool, const char* input, char* hexkey)
 	const char* command = apr_pstrcat(pool, "/usr/bin/openssl dgst -sha256 -mac HMAC -macopt ", hexkey, NULL);
 	char* hash = external_command(pool, input, command, 128);
 
-	int i;
-	int hash_len = strlen(hash);
-	for (i = 0; i < hash_len - 1; i++) {
-		if (hash[i] == ' ') {
-			hash = &hash[i + 1];
-			hash_len -= (i + 1);
-			break;
-		}
-	}
-	
-	hash[hash_len - 1] = '\0';
+	hash += 9;
+	hash[64] = '\0';
 
 	return hash;
 }
@@ -132,24 +123,13 @@ const char* derive_signing_key(apr_pool_t* pool, const char* enc_secret_key, con
 
 const char* make_signature(apr_pool_t *pool, const char* signing_key, const char* string_to_sign)
 {
-	char* hexkey = NULL;
-	hexkey = apr_pstrcat(pool, "hexkey:", signing_key, NULL);
+	const char* command = apr_pstrcat(pool, "/usr/bin/openssl dgst -binary -hex -sha256 -mac HMAC -macopt hexkey:", signing_key, NULL);
+	char* signature = external_command(pool, string_to_sign, command, 128);
 
-	const char* command = apr_pstrcat(pool, "/usr/bin/openssl dgst -binary -hex -sha256 -mac HMAC -macopt ", hexkey, NULL);
-	char* output = external_command(pool, string_to_sign, command, 128);
-	int i;
-	int len = strlen(output);
-	for (i = 0; i < len - 1; i++) {
-		if (output[i] == ' ') {
-			output = &output[i + 1];
-			len -= (i + 1);
-			break;
-		}
-	}
+	signature += 9;
+	signature[64] = '\0';
 
-	output[len - 1] = '\0';
-
-	return output;
+	return signature;
 }
 
 
@@ -283,11 +263,10 @@ void make_list_queues_request(request_rec* r)
 
 static int aws_handler(request_rec* r)
 {
-	if (!r->handler || strcmp(r->handler, "aws-handler")) {
+	ap_log_error(APLOG_MARK, APLOG_NOTICE, 0, NULL, "r->handler: %s", r->handler);
+	if ( r->handler == NULL || strcmp(r->handler, "aws-handler") != 0) {
 		return (DECLINED);
 	}
-
-	ap_log_error(APLOG_MARK, APLOG_NOTICE, 0, NULL, "aws_handler");
 
 	make_list_queues_request(r);
 
